@@ -79,6 +79,23 @@
   #setup .error { color: var(--red); font-weight: 600; min-height: 1.2em; }
   #setup .hint { font-size: 13px; color: #5f6368; }
   #save-btn { background: var(--ready); color: #fff; font-size: 20px; padding: 14px; }
+  #pack-bar { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
+  #pack-text { flex: 1; }
+  #pack-text.warn { color: var(--red); }
+  #pack-btn { font-size: 14px; padding: 8px 12px; }
+  #pack-sheet {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 20;
+    display: flex; align-items: flex-end; justify-content: center;
+  }
+  #pack-sheet form {
+    background: var(--card); width: 100%; max-width: 480px; border-radius: 16px 16px 0 0;
+    padding: 18px 16px max(18px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 10px;
+  }
+  #pack-sheet h2 { margin: 0; font-size: 20px; }
+  #pack-sheet .row { display: flex; gap: 10px; }
+  #pack-sheet label { flex: 1; font-weight: 600; font-size: 14px; }
+  #pack-sheet input { width: 100%; font-size: 24px; padding: 10px; border: 2px solid #dadce0; border-radius: 10px; margin-top: 4px; }
+  #pack-error { color: var(--red); font-weight: 600; min-height: 1.2em; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -125,6 +142,11 @@
     <button class="btn" type="submit">Look up</button>
   </form>
 
+  <div id="pack-bar" class="hidden">
+    <span id="pack-text"></span>
+    <button class="btn" id="pack-btn" type="button">Change pack</button>
+  </div>
+
   <div id="status" aria-live="polite">
     <div id="headline">LOADING…</div>
     <div id="guest-name"></div>
@@ -140,6 +162,24 @@
 </main>
 <footer id="footer"></footer>
 
+<!-- Auction number pack: the range on the pack of numbers this volunteer is holding -->
+<div id="pack-sheet" class="hidden">
+  <form id="pack-form" autocomplete="off">
+    <h2>Auction number pack</h2>
+    <div>Enter the numbers on the pack you're handing out.</div>
+    <div class="row">
+      <label>First number<input id="pack-start" type="text" inputmode="numeric"></label>
+      <label>Last number<input id="pack-end" type="text" inputmode="numeric"></label>
+    </div>
+    <div class="hint" style="font-size:13px;color:#5f6368">Packs of 20: the last number fills in for you.</div>
+    <div id="pack-error"></div>
+    <div class="row">
+      <button class="btn" id="pack-save" type="submit" style="flex:1;background:var(--ready);color:#fff">Use this pack</button>
+      <button class="btn" id="pack-cancel" type="button">Cancel</button>
+    </div>
+  </form>
+</div>
+
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
 // Paste the Apps Script web app link here so volunteers only need the PIN.
@@ -149,6 +189,7 @@ const BUILT_IN_API_URL = "";
 const REFRESH_MS = 20000;           // keep the local guest list fresh
 const RESUME_AFTER_MS = 1800;       // red/yellow: start scanning again after this
 const RESET_AFTER_CHECKIN_MS = 6000;  // long enough to write down the auction number
+const PACK_SIZE = 20;
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -163,8 +204,10 @@ const state = {
   busy: false,
   scanner: null, cameraOn: false, scanning: false,
   lastCode: "", lastCodeAt: 0,
-  lastMiss: "", lastMissAt: 0,
-  ignoreTicket: "", ignoreUntil: 0,  // just checked in: don't re-read it while it's still in view  // last ticket not found, so repeat scans don't re-download
+  lastMiss: "", lastMissAt: 0,       // last ticket not found, so repeat scans don't re-download
+  ignoreTicket: "", ignoreUntil: 0,  // just checked in: don't re-read it while it's still in view
+  pack: null,                        // {start, end}: this volunteer's auction number pack
+  packDone: null,                    // called after the pack form closes
   resumeTimer: null, refreshTimer: null,
 };
 
@@ -202,7 +245,8 @@ function vibrate(pattern) { try { navigator.vibrate && navigator.vibrate(pattern
 // ------------------------------------------------------------- display
 
 // guest: pass it to show their auction number (if the sheet has that column).
-function show(color, headline, name = "", table = "", detail = "", guest = null) {
+// preview: guest is about to be checked in, so show the number they'll get from the pack.
+function show(color, headline, name = "", table = "", detail = "", guest = null, preview = false) {
   const box = $("status");
   box.className = color;
   box.style.background = `var(--${color})`;
@@ -214,10 +258,123 @@ function show(color, headline, name = "", table = "", detail = "", guest = null)
   auction.className = "";
   auction.textContent = "";
   if (guest && guest.hasAuction) {
+    const next = nextAuction();
+    const warn = (text) => { auction.textContent = text; auction.className = "missing"; };
     if (guest.auction) auction.textContent = `AUCTION #${guest.auction}`;
-    else { auction.textContent = "No auction number assigned"; auction.className = "missing"; }
+    else if (!preview) warn("No auction number assigned");
+    else if (!state.pack) warn("Set your auction pack first");
+    else if (next === null) warn("Pack used up — enter the next pack");
+    else auction.textContent = `HAND OUT #${next}`;
+  }
+  updatePackBar();
+}
+
+// ------------------------------------------------------------- auction packs
+
+function auctionKey(v) {
+  let t = String(v ?? "").trim();
+  if (/^\d+\.0$/.test(t)) t = t.slice(0, -2);
+  return t.replace(/^0+(?=.)/, "");
+}
+
+function sheetHasAuction() {
+  for (const g of state.guests.values()) return !!g.hasAuction;
+  return false;
+}
+
+function usedAuctions() {
+  const used = new Set();
+  for (const g of state.guests.values()) if (g.auction) used.add(auctionKey(g.auction));
+  return used;
+}
+
+function nextAuction() {
+  if (!state.pack) return null;
+  const used = usedAuctions();
+  for (let n = state.pack.start; n <= state.pack.end; n++) if (!used.has(String(n))) return n;
+  return null;
+}
+
+function packRemaining() {
+  if (!state.pack) return 0;
+  const used = usedAuctions();
+  let left = 0;
+  for (let n = state.pack.start; n <= state.pack.end; n++) if (!used.has(String(n))) left++;
+  return left;
+}
+
+function updatePackBar() {
+  const bar = $("pack-bar"), text = $("pack-text");
+  bar.classList.toggle("hidden", !sheetHasAuction());
+  text.className = "";
+  if (!state.pack) {
+    text.textContent = "No auction pack set";
+    text.className = "warn";
+  } else {
+    const left = packRemaining();
+    const range = `${state.pack.start}–${state.pack.end}`;
+    if (left === 0) { text.textContent = `Pack ${range} used up`; text.className = "warn"; }
+    else text.textContent = `Pack ${range} · ${left} left · next #${nextAuction()}`;
   }
 }
+
+function parsePack(startText, endText) {
+  const start = Number(String(startText).trim());
+  if (!String(startText).trim() || !Number.isInteger(start) || start < 0) throw new Error("Enter the first number in the pack.");
+  const endRaw = String(endText).trim();
+  const end = endRaw ? Number(endRaw) : start + PACK_SIZE - 1;
+  if (!Number.isInteger(end)) throw new Error("Enter the last number in the pack.");
+  if (end < start) throw new Error("The last number must be the same as or bigger than the first.");
+  if (end - start >= 1000) throw new Error("A pack can hold at most 1000 numbers.");
+  return {start, end};
+}
+
+// Opens the pack form. onDone(pack or null) runs when it closes.
+function openPackForm(onDone = null, message = "") {
+  pauseScanning();
+  state.packDone = onDone;
+  const startIn = $("pack-start"), endIn = $("pack-end");
+  if (state.pack) {
+    const size = state.pack.end - state.pack.start;
+    startIn.value = state.pack.end + 1;
+    endIn.value = state.pack.end + 1 + size;
+  } else {
+    startIn.value = ""; endIn.value = "";
+  }
+  endIn.dataset.auto = "1";
+  $("pack-error").textContent = message;
+  $("pack-sheet").classList.remove("hidden");
+  startIn.focus();
+  startIn.select();
+}
+
+function closePackForm(pack) {
+  $("pack-sheet").classList.add("hidden");
+  document.activeElement && document.activeElement.blur();
+  const done = state.packDone;
+  state.packDone = null;
+  updatePackBar();
+  if (done) done(pack);
+  else if (!state.current) resumeScanning();
+}
+
+$("pack-start").addEventListener("input", () => {
+  const endIn = $("pack-end");
+  if (endIn.dataset.auto !== "1") return;
+  try { endIn.value = parsePack($("pack-start").value, "").end; } catch (e) { endIn.value = ""; }
+});
+$("pack-end").addEventListener("input", () => { $("pack-end").dataset.auto = "0"; });
+$("pack-form").onsubmit = (ev) => {
+  ev.preventDefault();
+  let pack;
+  try { pack = parsePack($("pack-start").value, $("pack-end").value); }
+  catch (e) { $("pack-error").textContent = e.message; return; }
+  state.pack = pack;
+  store.set("pack", JSON.stringify(pack));
+  closePackForm(pack);
+};
+$("pack-cancel").onclick = () => closePackForm(null);
+$("pack-btn").onclick = () => openPackForm(state.current ? () => showGuest(state.current.ticket, state.current) : null);
 
 function showReady() {
   state.current = null;
@@ -242,7 +399,7 @@ function showGuest(ticket, g) {
   } else {
     state.current = g;
     $("checkin-btn").disabled = false;
-    show("green", "✓ WELCOME", g.name, table, `Ticket ${g.ticket} — paid. Tap CHECK IN.`, g);
+    show("green", "✓ WELCOME", g.name, table, `Ticket ${g.ticket} — paid. Tap CHECK IN.`, g, true);
     vibrate(120);
     return; // stay paused until CHECK IN or Next
   }
@@ -256,6 +413,7 @@ function updateFooter() {
   $("footer").textContent = state.loadedAt
     ? `${all.length} guests · ${inCount} checked in · list updated ${ago}s ago`
     : "";
+  updatePackBar();
 }
 
 // ------------------------------------------------------------- data
@@ -296,15 +454,31 @@ async function lookup(raw) {
 async function checkIn() {
   const g = state.current;
   if (!g || state.busy) return;
+  const needsNumber = g.hasAuction && !g.auction;
+  if (needsNumber && nextAuction() === null) {
+    // No pack yet, or it's used up: ask for the next one, then carry on.
+    return openPackForm((pack) => {
+      if (pack && state.current === g) checkIn();
+      else if (state.current) showGuest(state.current.ticket, state.current);
+    }, state.pack ? "That pack is used up. Grab a new pack." : "");
+  }
   state.busy = true;
   state.current = null;
   $("checkin-btn").disabled = true;
   show("gray", "SAVING…", g.name, "", "Marking checked in");
   try {
-    const res = await call("checkin", {ticket: g.ticket, station: state.station});
+    const packArgs = needsNumber ? {packStart: state.pack.start, packEnd: state.pack.end} : {};
+    const res = await call("checkin", {ticket: g.ticket, station: state.station, ...packArgs});
     const table = res.guest && res.guest.table ? `Table ${res.guest.table}` : "";
     if (res.guest) state.guests.set(res.guest.ticket, res.guest);
     updateFooter();
+    if (res.packEmpty || res.needPack) {
+      // Other volunteers used the rest of this range. Refresh, put the guest back, ask for a pack.
+      state.busy = false;
+      await refresh().catch(() => {});
+      showGuest(g.ticket, state.guests.get(g.ticket) || g);
+      return openPackForm((pack) => { if (pack && state.current) checkIn(); }, res.error);
+    }
     if (!res.ok) {
       show("red", "✗ NOT CHECKED IN", g.name, table, res.error);
       vibrate([80, 60, 80]);
@@ -314,7 +488,12 @@ async function checkIn() {
       vibrate([80, 60, 80]);
       scheduleResume(RESUME_AFTER_MS);
     } else {
-      show("green", "✓ CHECKED IN", res.guest.name, table, "Enjoy the gala!", res.guest);
+      let detail = "Enjoy the gala!";
+      if (res.assignedAuction != null) {
+        detail = `Hand out auction #${res.assignedAuction} from your pack.`;
+        if (nextAuction() === null) detail += " That was the last number in this pack. Grab a new pack.";
+      }
+      show("green", "✓ CHECKED IN", res.guest.name, table, detail, res.guest);
       vibrate([60, 40, 60]);
       // Ready for the next person right away; this screen stays up until they scan
       // (or for a few seconds), so there's time to write down the auction number.
@@ -458,6 +637,7 @@ $("manual-form").onsubmit = (ev) => {
   state.api = BUILT_IN_API_URL || fromHash || store.get("api");
   state.pin = store.get("pin");
   state.station = store.get("station");
+  try { const p = JSON.parse(store.get("pack") || "null"); if (p) state.pack = parsePack(p.start, p.end); } catch (e) {}
   if (fromHash) history.replaceState(null, "", location.pathname + location.search);
   if (!state.api || !state.pin || !state.station) return showSetup();
   $("setup").style.display = "none";
