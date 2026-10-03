@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f2a44">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>ONT Gala Check-In</title>
+<style>
+  :root {
+    --bar: #202124; --ready: #1f2a44; --green: #1e8e3e; --red: #c5221f;
+    --yellow: #f2b600; --gray: #5f6368; --bg: #f1f3f4; --card: #ffffff; --text: #202124;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column; min-height: 100dvh;
+  }
+  header {
+    background: var(--bar); color: #fff; padding: 10px 16px;
+    padding-top: max(10px, env(safe-area-inset-top));
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header .station { font-size: 13px; color: #bdc1c6; }
+  header button { background: none; border: 1px solid #5f6368; color: #fff; border-radius: 8px; padding: 6px 10px; font-size: 14px; }
+  main { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 10px 16px; }
+
+  #camera-wrap { position: relative; background: #000; border-radius: 12px; overflow: hidden; min-height: 160px; }
+  #reader { width: 100%; }
+  #reader video { width: 100% !important; height: auto; display: block; }
+  #camera-msg {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #fff; text-align: center; padding: 16px; font-size: 15px;
+  }
+  #camera-msg button { margin-top: 10px; }
+
+  .manual { display: flex; gap: 8px; }
+  .manual input {
+    flex: 1; min-width: 0; font-size: 20px; padding: 10px 12px;
+    border: 2px solid #dadce0; border-radius: 10px;
+  }
+  .btn {
+    font-size: 17px; font-weight: 600; padding: 10px 16px; border-radius: 10px;
+    border: none; background: #dadce0; color: var(--text);
+  }
+
+  #status {
+    border-radius: 14px; padding: 16px; text-align: center; color: #fff;
+    background: var(--ready);
+  }
+  #status.yellow { color: #202124; }
+  #headline { font-size: 26px; font-weight: 800; letter-spacing: .5px; }
+  #guest-name { font-size: 24px; margin-top: 6px; word-wrap: break-word; }
+  #guest-table { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  #guest-auction {
+    display: inline-block; margin-top: 8px; padding: 4px 16px; border-radius: 10px;
+    background: #fff; color: var(--text); font-size: 28px; font-weight: 800;
+  }
+  #guest-auction.missing { color: var(--red); font-size: 17px; }
+  #guest-auction:empty { display: none; }
+  #detail { font-size: 15px; margin-top: 8px; opacity: .95; }
+
+  .actions { display: flex; gap: 8px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  #checkin-btn {
+    flex: 1; font-size: 22px; font-weight: 800; padding: 18px; border-radius: 14px; border: none;
+    background: var(--green); color: #fff;
+  }
+  #checkin-btn:disabled { background: #dadce0; color: #9aa0a6; }
+  #next-btn { font-size: 17px; padding: 18px 16px; border-radius: 14px; }
+  footer { font-size: 12px; color: #5f6368; text-align: center; padding: 0 16px 10px; }
+
+  /* setup screen */
+  #setup { padding: 20px 16px; display: none; flex-direction: column; gap: 14px; }
+  #setup label { font-weight: 600; font-size: 15px; }
+  #setup input { width: 100%; font-size: 20px; padding: 10px 12px; border: 2px solid #dadce0; border-radius: 10px; margin-top: 4px; }
+  #setup .error { color: var(--red); font-weight: 600; min-height: 1.2em; }
+  #setup .hint { font-size: 13px; color: #5f6368; }
+  #save-btn { background: var(--ready); color: #fff; font-size: 20px; padding: 14px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>ONT Gala Check-In</h1>
+    <div class="station" id="station-label"></div>
+  </div>
+  <button id="settings-btn" type="button">Settings</button>
+</header>
+
+<!-- Setup: PIN + station name (+ server link if not built in) -->
+<section id="setup">
+  <h2 style="margin:0">Set up this phone</h2>
+  <div id="api-field">
+    <label for="api-input">Check-in server link</label>
+    <input id="api-input" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+    <div class="hint">The organizer gives you this link (it ends in /exec).</div>
+  </div>
+  <div>
+    <label for="pin-input">PIN</label>
+    <input id="pin-input" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN from the organizer">
+  </div>
+  <div>
+    <label for="station-input">Station name</label>
+    <input id="station-input" type="text" placeholder="e.g. Front Door" maxlength="40">
+    <div class="hint">Saved with each check-in so you can see who checked people in where.</div>
+  </div>
+  <div class="error" id="setup-error"></div>
+  <button class="btn" id="save-btn" type="button">Start checking in</button>
+</section>
+
+<!-- Main check-in screen -->
+<main id="main" class="hidden">
+  <div id="camera-wrap">
+    <div id="reader"></div>
+    <div id="camera-msg">Starting camera…</div>
+  </div>
+
+  <form class="manual" id="manual-form" autocomplete="off">
+    <input id="manual-input" type="text" inputmode="numeric" enterkeyhint="search"
+           placeholder="Or type ticket #" aria-label="Ticket number">
+    <button class="btn" type="submit">Look up</button>
+  </form>
+
+  <div id="status" aria-live="polite">
+    <div id="headline">LOADING…</div>
+    <div id="guest-name"></div>
+    <div id="guest-table"></div>
+    <div id="guest-auction"></div>
+    <div id="detail"></div>
+  </div>
+
+  <div class="actions">
+    <button id="checkin-btn" type="button" disabled>CHECK IN</button>
+    <button id="next-btn" class="btn" type="button">Next</button>
+  </div>
+</main>
+<footer id="footer"></footer>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+// Paste the Apps Script web app link here so volunteers only need the PIN.
+// (Leave blank to have each phone ask for it, or open this page with #api=<link>.)
+const BUILT_IN_API_URL = "";
+
+const REFRESH_MS = 20000;           // keep the local guest list fresh
+const RESUME_AFTER_MS = 1800;       // red/yellow: start scanning again after this
+const RESET_AFTER_CHECKIN_MS = 6000;  // long enough to write down the auction number
+
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k) { try { return localStorage.getItem("ontgala." + k) || ""; } catch (e) { return ""; } },
+  set(k, v) { try { localStorage.setItem("ontgala." + k, v); } catch (e) {} },
+};
+
+const state = {
+  api: "", pin: "", station: "",
+  guests: new Map(), loadedAt: 0,
+  current: null,          // guest shown in green, waiting for CHECK IN
+  busy: false,
+  scanner: null, cameraOn: false, scanning: false,
+  lastCode: "", lastCodeAt: 0,
+  lastMiss: "", lastMissAt: 0,
+  ignoreTicket: "", ignoreUntil: 0,  // just checked in: don't re-read it while it's still in view  // last ticket not found, so repeat scans don't re-download
+  resumeTimer: null, refreshTimer: null,
+};
+
+// ------------------------------------------------------------- helpers
+
+function normalizeTicket(value) {
+  let text = String(value ?? "").trim();
+  // A QR code may hold a link like https://…?ticket=1001 – use the ticket part.
+  const m = text.match(/[?&#](?:ticket|t|id)=([^&#\s]+)/i);
+  if (m) text = decodeURIComponent(m[1]);
+  text = text.trim().toUpperCase();
+  if (/^\d+\.0$/.test(text)) text = text.slice(0, -2);
+  return text;
+}
+
+async function call(action, extra = {}) {
+  // text/plain keeps this a "simple" request, so the browser doesn't need a CORS preflight.
+  const res = await fetch(state.api, {
+    method: "POST",
+    headers: {"Content-Type": "text/plain;charset=utf-8"},
+    body: JSON.stringify({action, pin: state.pin, ...extra}),
+    redirect: "follow",
+  });
+  if (!res.ok) throw new Error("Server error " + res.status);
+  const data = await res.json();
+  if (data.badPin) {
+    showSetup(data.error);
+    throw Object.assign(new Error(data.error), {handled: true});
+  }
+  return data;
+}
+
+function vibrate(pattern) { try { navigator.vibrate && navigator.vibrate(pattern); } catch (e) {} }
+
+// ------------------------------------------------------------- display
+
+// guest: pass it to show their auction number (if the sheet has that column).
+function show(color, headline, name = "", table = "", detail = "", guest = null) {
+  const box = $("status");
+  box.className = color;
+  box.style.background = `var(--${color})`;
+  $("headline").textContent = headline;
+  $("guest-name").textContent = name;
+  $("guest-table").textContent = table;
+  $("detail").textContent = detail;
+  const auction = $("guest-auction");
+  auction.className = "";
+  auction.textContent = "";
+  if (guest && guest.hasAuction) {
+    if (guest.auction) auction.textContent = `AUCTION #${guest.auction}`;
+    else { auction.textContent = "No auction number assigned"; auction.className = "missing"; }
+  }
+}
+
+function showReady() {
+  state.current = null;
+  $("checkin-btn").disabled = true;
+  show("ready", "READY", "Scan a ticket QR code", "", "…or type the ticket number above");
+  resumeScanning();
+}
+
+function showGuest(ticket, g) {
+  state.current = null;
+  $("checkin-btn").disabled = true;
+  const table = g && g.table ? `Table ${g.table}` : "";
+  if (!g) {
+    show("red", "✗ NOT ON LIST", "Please send to the help desk", "", `Ticket ${ticket} was not found on the guest list.`);
+    vibrate([80, 60, 80]);
+  } else if (g.checkedIn) {
+    show("yellow", "ALREADY CHECKED IN", g.name, table, `Ticket ${g.ticket} was checked in ${g.time || "earlier"}.`, g);
+    vibrate([80, 60, 80]);
+  } else if (!g.paid) {
+    show("red", "✗ NOT PAID", g.name, table, `Ticket ${g.ticket} is on the list but not marked paid.`);
+    vibrate([80, 60, 80]);
+  } else {
+    state.current = g;
+    $("checkin-btn").disabled = false;
+    show("green", "✓ WELCOME", g.name, table, `Ticket ${g.ticket} — paid. Tap CHECK IN.`, g);
+    vibrate(120);
+    return; // stay paused until CHECK IN or Next
+  }
+  scheduleResume(RESUME_AFTER_MS);
+}
+
+function updateFooter() {
+  const all = [...state.guests.values()];
+  const inCount = all.filter((g) => g.checkedIn).length;
+  const ago = state.loadedAt ? Math.round((Date.now() - state.loadedAt) / 1000) : null;
+  $("footer").textContent = state.loadedAt
+    ? `${all.length} guests · ${inCount} checked in · list updated ${ago}s ago`
+    : "";
+}
+
+// ------------------------------------------------------------- data
+
+async function refresh() {
+  const data = await call("guests");
+  if (!data.ok) throw new Error(data.error);
+  state.guests = new Map(data.guests.map((g) => [g.ticket, g]));
+  state.loadedAt = Date.now();
+  updateFooter();
+}
+
+function startRefreshLoop() {
+  clearInterval(state.refreshTimer);
+  state.refreshTimer = setInterval(() => {
+    if (!state.busy) refresh().catch(() => {});
+    updateFooter();
+  }, REFRESH_MS);
+}
+
+async function lookup(raw) {
+  const ticket = normalizeTicket(raw);
+  if (!ticket || state.busy) return;
+  clearTimeout(state.resumeTimer);
+  pauseScanning();
+  let g = state.guests.get(ticket);
+  const justMissed = ticket === state.lastMiss && Date.now() - state.lastMissAt < 5000;
+  if (!g && !justMissed) {
+    // Not in our copy - maybe just added to the sheet. Check once more.
+    show("gray", "CHECKING…", "", "", `Ticket ${ticket}`);
+    try { await refresh(); } catch (e) { return showError(e); }
+    g = state.guests.get(ticket);
+  }
+  if (!g) { state.lastMiss = ticket; state.lastMissAt = Date.now(); }
+  showGuest(ticket, g);
+}
+
+async function checkIn() {
+  const g = state.current;
+  if (!g || state.busy) return;
+  state.busy = true;
+  state.current = null;
+  $("checkin-btn").disabled = true;
+  show("gray", "SAVING…", g.name, "", "Marking checked in");
+  try {
+    const res = await call("checkin", {ticket: g.ticket, station: state.station});
+    const table = res.guest && res.guest.table ? `Table ${res.guest.table}` : "";
+    if (res.guest) state.guests.set(res.guest.ticket, res.guest);
+    updateFooter();
+    if (!res.ok) {
+      show("red", "✗ NOT CHECKED IN", g.name, table, res.error);
+      vibrate([80, 60, 80]);
+      scheduleResume(RESUME_AFTER_MS);
+    } else if (res.alreadyCheckedIn) {
+      show("yellow", "ALREADY CHECKED IN", res.guest.name, table, `Checked in ${res.guest.time || "earlier"}.`, res.guest);
+      vibrate([80, 60, 80]);
+      scheduleResume(RESUME_AFTER_MS);
+    } else {
+      show("green", "✓ CHECKED IN", res.guest.name, table, "Enjoy the gala!", res.guest);
+      vibrate([60, 40, 60]);
+      // Ready for the next person right away; this screen stays up until they scan
+      // (or for a few seconds), so there's time to write down the auction number.
+      state.ignoreTicket = res.guest.ticket;
+      state.ignoreUntil = Date.now() + 10000;
+      resumeScanning();
+      state.resumeTimer = setTimeout(showReady, RESET_AFTER_CHECKIN_MS);
+    }
+  } catch (e) {
+    showError(e);
+  } finally {
+    state.busy = false;
+  }
+}
+
+function showError(e) {
+  if (e && e.handled) return;
+  state.current = null;
+  $("checkin-btn").disabled = true;
+  show("gray", "CONNECTION PROBLEM", "", "", `${e.message || e}. Check the signal and scan again.`);
+  scheduleResume(RESUME_AFTER_MS);
+}
+
+// ------------------------------------------------------------- camera
+
+async function startCamera() {
+  const msg = $("camera-msg");
+  if (typeof Html5Qrcode === "undefined") {
+    msg.textContent = "Camera scanner didn't load. Type ticket numbers below.";
+    return;
+  }
+  if (!state.scanner) state.scanner = new Html5Qrcode("reader", {verbose: false});
+  try {
+    await state.scanner.start(
+      {facingMode: "environment"},
+      {fps: 12, qrbox: (w, h) => { const s = Math.floor(Math.min(w, h) * 0.7); return {width: s, height: s}; },
+       aspectRatio: 1.333},
+      onScan, () => {});
+    state.cameraOn = true;
+    state.scanning = true;
+    msg.classList.add("hidden");
+  } catch (e) {
+    msg.classList.remove("hidden");
+    msg.innerHTML = "";
+    msg.append("Camera not available. Allow camera access for this site, or type ticket numbers below.");
+    const retry = document.createElement("button");
+    retry.className = "btn"; retry.textContent = "Try camera again";
+    retry.onclick = () => { msg.textContent = "Starting camera…"; startCamera(); };
+    msg.append(document.createElement("br"), retry);
+  }
+}
+
+function onScan(text) {
+  if (!state.scanning || state.busy) return;
+  const now = Date.now();
+  if (text === state.lastCode && now - state.lastCodeAt < 4000) return; // same ticket still in view
+  if (normalizeTicket(text) === state.ignoreTicket && now < state.ignoreUntil) return;
+  state.lastCode = text; state.lastCodeAt = now;
+  lookup(text);
+}
+
+function pauseScanning() {
+  state.scanning = false;
+  if (state.cameraOn) try { state.scanner.pause(true); } catch (e) {}
+}
+
+function resumeScanning() {
+  if (state.cameraOn) try { state.scanner.resume(); } catch (e) {}
+  state.scanning = true;
+}
+
+function scheduleResume(ms) {
+  clearTimeout(state.resumeTimer);
+  state.resumeTimer = setTimeout(() => {
+    state.lastCodeAt = Date.now();  // don't instantly re-read the ticket that's still in view
+    resumeScanning();
+  }, ms);
+}
+
+// ------------------------------------------------------------- setup
+
+function showSetup(error = "") {
+  $("main").classList.add("hidden");
+  $("setup").style.display = "flex";
+  $("api-field").classList.toggle("hidden", !!BUILT_IN_API_URL);
+  $("api-input").value = state.api;
+  $("pin-input").value = "";
+  $("station-input").value = state.station;
+  $("setup-error").textContent = error;
+  pauseScanning();
+  clearInterval(state.refreshTimer);
+}
+
+async function saveSetup() {
+  const api = BUILT_IN_API_URL || $("api-input").value.trim();
+  const pin = $("pin-input").value.trim();
+  const station = $("station-input").value.trim();
+  if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(api)) {
+    $("setup-error").textContent = "Enter the check-in server link (it starts with https://script.google.com/).";
+    return;
+  }
+  if (!pin) { $("setup-error").textContent = "Enter the PIN."; return; }
+  if (!station) { $("setup-error").textContent = "Enter a station name."; return; }
+  Object.assign(state, {api, pin, station});
+  $("setup-error").textContent = "Connecting…";
+  try {
+    await refresh();
+  } catch (e) {
+    if (!e.handled) $("setup-error").textContent = "Could not connect: " + (e.message || e);
+    return;
+  }
+  store.set("api", api); store.set("pin", pin); store.set("station", station);
+  enterMain();
+}
+
+async function enterMain() {
+  $("setup").style.display = "none";
+  $("main").classList.remove("hidden");
+  $("station-label").textContent = state.station ? `Station: ${state.station}` : "";
+  startRefreshLoop();
+  if (!state.cameraOn) await startCamera();
+  showReady();
+}
+
+// ------------------------------------------------------------- start
+
+$("save-btn").onclick = saveSetup;
+$("settings-btn").onclick = () => showSetup();
+$("checkin-btn").onclick = checkIn;
+$("next-btn").onclick = () => { clearTimeout(state.resumeTimer); showReady(); };
+$("manual-form").onsubmit = (ev) => {
+  ev.preventDefault();
+  const v = $("manual-input").value;
+  $("manual-input").value = "";
+  $("manual-input").blur();   // hide the phone keyboard so the result is visible
+  lookup(v);
+};
+
+(async function init() {
+  const fromHash = new URLSearchParams(location.hash.slice(1)).get("api");
+  state.api = BUILT_IN_API_URL || fromHash || store.get("api");
+  state.pin = store.get("pin");
+  state.station = store.get("station");
+  if (fromHash) history.replaceState(null, "", location.pathname + location.search);
+  if (!state.api || !state.pin || !state.station) return showSetup();
+  $("setup").style.display = "none";
+  $("main").classList.remove("hidden");
+  show("gray", "LOADING…", "", "", "Loading guest list");
+  let error = null;
+  try { await refresh(); } catch (e) { error = e; }
+  if (error && error.handled) return;   // wrong PIN: setup screen is showing
+  await enterMain();
+  if (error) showError(error);
+})();
+</script>
+</body>
+</html>
